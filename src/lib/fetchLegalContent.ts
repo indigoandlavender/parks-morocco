@@ -1,7 +1,6 @@
 import { google } from "googleapis";
-import credentials from "./google-credentials.json";
 
-const DOCUMENT_ID = "1OIw-cgup17vdimqveVNOmSBSrRbykuTVM39Umm-PJtQ";
+const SPREADSHEET_ID = "1ap2SG7XkXKnevP4oHNMt0Mpo_X8SD0-iu54rA6atzDM";
 
 export interface LegalContent {
   termsOfService: string;
@@ -9,62 +8,83 @@ export interface LegalContent {
   disclaimer: string;
 }
 
+function getCredentials() {
+  const clientEmail = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
+  const privateKey = process.env.GOOGLE_PRIVATE_KEY?.replace(/\\n/g, "\n");
+
+  if (!clientEmail || !privateKey) {
+    return null;
+  }
+
+  return {
+    client_email: clientEmail,
+    private_key: privateKey,
+  };
+}
+
 export async function fetchLegalContent(): Promise<LegalContent> {
   try {
+    const credentials = getCredentials();
+
+    if (!credentials) {
+      console.log("Google credentials not configured, using default content");
+      return getDefaultContent();
+    }
+
     const auth = new google.auth.GoogleAuth({
       credentials,
-      scopes: ["https://www.googleapis.com/auth/documents.readonly"],
+      scopes: ["https://www.googleapis.com/auth/spreadsheets.readonly"],
     });
 
-    const docs = google.docs({ version: "v1", auth });
-    const response = await docs.documents.get({ documentId: DOCUMENT_ID });
+    const sheets = google.sheets({ version: "v4", auth });
 
-    const content = response.data.body?.content || [];
-    let fullText = "";
+    // Fetch all data from the sheet (assuming columns: Type, Title, Content)
+    const response = await sheets.spreadsheets.values.get({
+      spreadsheetId: SPREADSHEET_ID,
+      range: "A:C", // Adjust range as needed
+    });
 
-    // Extract text from document
-    for (const element of content) {
-      if (element.paragraph?.elements) {
-        for (const textElement of element.paragraph.elements) {
-          if (textElement.textRun?.content) {
-            fullText += textElement.textRun.content;
-          }
-        }
+    const rows = response.data.values || [];
+    const content: LegalContent = {
+      termsOfService: "",
+      privacyPolicy: "",
+      disclaimer: "",
+    };
+
+    // Skip header row, parse content
+    for (let i = 1; i < rows.length; i++) {
+      const row = rows[i];
+      if (!row || row.length < 2) continue;
+
+      const type = (row[0] || "").toLowerCase().trim();
+      const value = row[1] || row[2] || ""; // Use second or third column for content
+
+      if (type.includes("terms")) {
+        content.termsOfService = value;
+      } else if (type.includes("privacy")) {
+        content.privacyPolicy = value;
+      } else if (type.includes("disclaimer")) {
+        content.disclaimer = value;
       }
     }
 
-    // Parse sections (assuming document has headers for each section)
-    const sections = parseSections(fullText);
-
     return {
-      termsOfService: sections.termsOfService || "Terms of Service",
-      privacyPolicy: sections.privacyPolicy || "Privacy Policy",
-      disclaimer: sections.disclaimer || "Disclaimer",
+      termsOfService: content.termsOfService || "Terms of Service",
+      privacyPolicy: content.privacyPolicy || "Privacy Policy",
+      disclaimer: content.disclaimer || "Disclaimer",
     };
   } catch (error) {
     console.error("Error fetching legal content:", error);
-    // Return defaults if fetch fails
-    return {
-      termsOfService: "Terms of Service",
-      privacyPolicy: "Privacy Policy",
-      disclaimer: "Disclaimer",
-    };
+    return getDefaultContent();
   }
 }
 
-function parseSections(text: string): Partial<LegalContent> {
-  const result: Partial<LegalContent> = {};
-
-  // Try to find and extract sections based on common headers
-  const termsMatch = text.match(/Terms of Service[\s\S]*?(?=Privacy Policy|Disclaimer|$)/i);
-  const privacyMatch = text.match(/Privacy Policy[\s\S]*?(?=Terms of Service|Disclaimer|$)/i);
-  const disclaimerMatch = text.match(/Disclaimer[\s\S]*?(?=Terms of Service|Privacy Policy|$)/i);
-
-  if (termsMatch) result.termsOfService = termsMatch[0].trim();
-  if (privacyMatch) result.privacyPolicy = privacyMatch[0].trim();
-  if (disclaimerMatch) result.disclaimer = disclaimerMatch[0].trim();
-
-  return result;
+function getDefaultContent(): LegalContent {
+  return {
+    termsOfService: "Terms of Service",
+    privacyPolicy: "Privacy Policy",
+    disclaimer: "Disclaimer",
+  };
 }
 
 // Cache the content for static generation
